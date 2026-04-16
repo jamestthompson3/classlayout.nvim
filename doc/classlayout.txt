@@ -1,0 +1,133 @@
+*classlayout.txt*    Visualize C/C++ class/struct memory layouts using clang
+
+Author: J-Cowsert
+License: MIT
+
+==============================================================================
+CONTENTS                                                 *classlayout-contents*
+
+  1. Introduction ............................ |classlayout-introduction|
+  2. Requirements ............................ |classlayout-requirements|
+  3. Setup ................................... |classlayout-setup|
+  4. Configuration ........................... |classlayout-configuration|
+  5. Usage ................................... |classlayout-usage|
+  6. Commands ................................ |classlayout-commands|
+  7. How it works ............................ |classlayout-internals|
+
+==============================================================================
+1. INTRODUCTION                                      *classlayout-introduction*
+
+classlayout.nvim displays the memory layout of C and C++ structs and classes
+in a floating window. It uses clang's `-fdump-record-layouts-complete` flag
+to show field offsets, padding, and total size.
+
+When clangd is attached, the plugin uses LSP hover to resolve the actual type
+under the cursor. This means you can place your cursor on a variable and the
+plugin will resolve it to the underlying type, including fully-qualified
+namespaced names and template types. Without clangd, the plugin falls back
+to the raw word under the cursor (`<cword>`), which only works when the
+cursor is directly on a type name.
+
+==============================================================================
+2. REQUIREMENTS                                      *classlayout-requirements*
+
+- Neovim >= 0.10
+- clang or clang++ in PATH
+- clangd (for type resolution from variables, namespaced types, and
+  templates — without it, only bare type names under the cursor work)
+
+==============================================================================
+3. SETUP                                                  *classlayout-setup*
+
+Using lazy.nvim: >lua
+
+  {
+    "J-Cowsert/classlayout.nvim",
+    ft = { "c", "cpp" },
+    opts = {},
+  }
+<
+
+Using require: >lua
+
+  require("classlayout").setup()
+<
+
+==============================================================================
+4. CONFIGURATION                                  *classlayout-configuration*
+
+Pass a table to `setup()` to override defaults: >lua
+
+  require("classlayout").setup({
+    keymap = "<leader>cl",      -- keymap to trigger layout display
+    compiler = "clang",         -- clang or clang++
+    args = {},                  -- extra compiler flags
+    compile_commands = true,    -- auto-detect flags from compile_commands.json
+  })
+<
+
+                                                  *classlayout-config-keymap*
+keymap ~
+  Default: `"<leader>cl"`
+  Buffer-local normal mode mapping set for C and C++ files.
+
+                                                *classlayout-config-compiler*
+compiler ~
+  Default: `"clang"`
+  The clang binary to invoke. Must support `-Xclang -fdump-record-layouts-complete`.
+
+                                                    *classlayout-config-args*
+args ~
+  Default: `{}`
+  Extra flags appended to the compiler invocation. These are added after
+  any flags extracted from compile_commands.json, so they can override.
+  Useful for custom include paths or defines: >lua
+
+    args = { "-I/opt/custom/include", "-DNDEBUG" }
+<
+
+                                        *classlayout-config-compile-commands*
+compile_commands ~
+  Default: `true`
+  When enabled, the plugin walks up from the current file to find
+  compile_commands.json and extracts `-I`, `-D`, `-std`, and `-isystem`
+  flags. The result is cached and invalidated when the file's mtime
+  changes. For header files not listed in compile_commands.json, flags
+  from the first entry are used as a fallback.
+
+==============================================================================
+5. USAGE                                                  *classlayout-usage*
+
+1. Open a C or C++ file.
+2. Place the cursor on a struct/class name or a variable of that type.
+3. Press `<leader>cl` or run |:ClassLayout|.
+4. A floating window shows the memory layout with field offsets and sizes.
+5. Press `q` or `<Esc>` to close the float.
+
+With clangd running, the cursor can be on a variable and the plugin resolves
+the underlying type. Without clangd, the cursor must be on the type name
+itself.
+
+==============================================================================
+6. COMMANDS                                            *classlayout-commands*
+
+                                                              *:ClassLayout*
+:ClassLayout
+  Show the memory layout for the type under the cursor. Uses clangd hover
+  to resolve the type when available, otherwise uses the word under the
+  cursor.
+
+==============================================================================
+7. HOW IT WORKS                                       *classlayout-internals*
+
+The plugin invokes clang with `-Xclang -fdump-record-layouts-complete` and
+`-fsyntax-only` on the current file. Clang outputs the memory layout for
+every record type it encounters. The plugin parses this output, matches the
+requested type by name (trying fully-qualified first, then unqualified as
+a fallback), and displays the matching block in a floating window.
+
+Anonymous type source locations (e.g. `(anonymous at /usr/lib/...)`) are
+cleaned to `(anonymous)` for readability.
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:
