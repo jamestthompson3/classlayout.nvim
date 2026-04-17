@@ -80,6 +80,10 @@ end
 -- { path = { mtime = number, file_flags = { [resolved_path] = flags }, fallback_flags = flags } }
 M._cc_cache = {}
 
+-- Cache: keyed by resolved filepath
+-- { path = { mtime = number, output = string } }
+M._dump_cache = {}
+
 --- Get compiler flags from compile_commands.json for the given filepath.
 --- For header files (not in compile_commands.json), falls back to flags from any entry in the same project.
 function M.get_compile_flags(filepath)
@@ -191,8 +195,16 @@ function M.show()
   -- Try LSP first to resolve the actual type, fall back to word under cursor
   local lsp_type = M.get_type_from_lsp()
   local class_name
+  local full_lsp_type
   if lsp_type then
     class_name = M.extract_class_name(lsp_type)
+    -- Keep the cleaned full type (with templates) for exact matching
+    local cleaned = lsp_type:gsub("[%s%*&]+$", "")
+    cleaned = cleaned:gsub("^const%s+", "")
+    cleaned = cleaned:gsub("^volatile%s+", "")
+    if cleaned ~= class_name then
+      full_lsp_type = cleaned
+    end
   else
     class_name = vim.fn.expand("<cword>")
   end
@@ -216,24 +228,38 @@ function M.show()
     return
   end
 
-  local args = { compiler, "-Xclang", "-fdump-record-layouts-complete", "-fsyntax-only", filepath }
+  local real_filepath = vim.fn.resolve(filepath)
+  local stat = vim.uv.fs_stat(real_filepath)
+  local mtime = stat and stat.mtime.sec or 0
+  local cached = M._dump_cache[real_filepath]
 
-  -- Pull flags from compile_commands.json if enabled
-  if M.config.compile_commands then
-    local cc_flags = M.get_compile_flags(filepath)
-    for _, flag in ipairs(cc_flags) do
-      args[#args + 1] = flag
+  local output
+  if cached and cached.mtime == mtime then
+    output = cached.output
+  else
+    local args = { compiler, "-Xclang", "-fdump-record-layouts-complete", "-fsyntax-only" }
+    if ft == "cpp" then
+      args[#args + 1] = "-x"
+      args[#args + 1] = "c++"
     end
+    args[#args + 1] = filepath
+
+    if M.config.compile_commands then
+      for _, flag in ipairs(M.get_compile_flags(filepath)) do
+        args[#args + 1] = flag
+      end
+    end
+
+    for _, arg in ipairs(M.config.args or {}) do
+      args[#args + 1] = arg
+    end
+
+    local result = vim.system(args, { text = true }):wait()
+    output = (result.stdout or "") .. (result.stderr or "")
+    M._dump_cache[real_filepath] = { mtime = mtime, output = output }
   end
 
-  -- Append user-configured args (these take priority / can override)
-  for _, arg in ipairs(M.config.args or {}) do
-    args[#args + 1] = arg
-  end
-
-  local result = vim.system(args, { text = true }):wait()
-  local output = (result.stdout or "") .. (result.stderr or "")
-  local block = M.parse(output, class_name)
+  local block = M.parse(output, class_name, full_lsp_type)
 
   if not block then
     vim.notify("ClassLayout: no layout found for '" .. class_name .. "'", vim.log.levels.WARN)
@@ -243,7 +269,7 @@ function M.show()
   M.open_float(block, class_name)
 end
 
-function M.parse(output, class_name)
+function M.parse(output, class_name, full_type_hint)
   local blocks = {}
   local current = {}
   local in_block = false
@@ -264,6 +290,8 @@ function M.parse(output, class_name)
   end
 
   local unqualified_name = class_name:match("::([%w_]+)$") or class_name
+  local exact_match = nil
+  local stripped_match = nil
   local fallback = nil
 
   for _, block in ipairs(blocks) do
@@ -271,10 +299,18 @@ function M.parse(output, class_name)
     if line then
       local full_type = line:match("^%s*%d+%s*|%s*[%w]+%s+(.+)$")
       if full_type then
-        full_type = full_type:gsub("%s*%(.*$", "")
+        full_type = full_type:gsub("%s*%(empty%)%s*$", "")
+        full_type = full_type:gsub("%s*%(sizeof.*$", "")
+        -- Exact match with full type (including template args)
+        if full_type_hint and full_type == full_type_hint then
+          return block
+        end
         local without_template = full_type:gsub("<.+>", "")
         if without_template == class_name then
-          return block
+          if not full_type_hint then
+            return block
+          end
+          stripped_match = stripped_match or block
         end
         if not fallback then
           local unqualified = without_template:match("::([%w_]+)$") or without_template
@@ -286,7 +322,7 @@ function M.parse(output, class_name)
     end
   end
 
-  return fallback
+  return exact_match or stripped_match or fallback
 end
 
 function M.clean(lines)
