@@ -245,11 +245,10 @@ function M.show()
   local real_filepath = vim.fn.resolve(filepath)
   local stat = vim.uv.fs_stat(real_filepath)
   local mtime = stat and stat.mtime.sec or 0
-  local cached = M._dump_cache[real_filepath]
 
   local output
-  if cached and cached.mtime == mtime then
-    output = cached.output
+  if M._dump_cache[real_filepath] and M._dump_cache[real_filepath].mtime == mtime then
+    output = M._dump_cache[real_filepath].output
   else
     local args = { compiler, "-Xclang", "-fdump-record-layouts-complete", "-Wpadded", "-fsyntax-only" }
     if ft == "cpp" then
@@ -281,19 +280,18 @@ function M.show()
   end
 
   local warnings = {}
-  local stderr = cached and cached.stderr or M._dump_cache[real_filepath].stderr
+  local stderr = M._dump_cache[real_filepath].stderr
   for line in stderr:gmatch("[^\n]+") do
     if line:match("%-Wpadded%]") then
       local matches = source_loc and line:match(source_loc) or line:match(class_name)
       if matches then
-        local bytes, field = line:match("with (%d+) bytes to align '([^']+)'")
+        local bytes, field = line:match("with (%d+) bytes? to align '([^']+)'")
         if bytes and field then
-          warnings[#warnings + 1] = bytes .. "B padding before '" .. field
-            .. "' — reorder fields by decreasing size to eliminate"
+          warnings[#warnings + 1] = bytes .. "B padding added before '" .. field .. "'"
         else
-          bytes = line:match("with (%d+) bytes to alignment boundary")
+          bytes = line:match("with (%d+) bytes? to alignment boundary")
           if bytes then
-            warnings[#warnings + 1] = bytes .. "B trailing padding to meet alignment"
+            warnings[#warnings + 1] = bytes .. "B trailing padding added"
           end
         end
       end
@@ -377,7 +375,7 @@ function M.parse(output, class_name, full_type_hint)
 end
 
 --- Strip verbose anonymous type source locations and extract sizeof/align metadata.
-function M.clean(raw_lines, class_name)
+function M.clean(raw_lines)
   local lines = {}
   local sizeof, align
   for _, line in ipairs(raw_lines) do
@@ -397,7 +395,7 @@ end
 
 function M.open_float(lines, class_name, warnings)
   local sizeof, align
-  lines, sizeof, align = M.clean(lines, class_name)
+  lines, sizeof, align = M.clean(lines)
 
   local header = class_name
   if sizeof then
